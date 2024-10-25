@@ -99,6 +99,9 @@ def compute_metrics(pred):
         'f1': f1,
     }
 
+# add better verison of compute_metrics
+
+
 # Adding Early Stopping Callback
 trainer = Trainer(
     model=model,
