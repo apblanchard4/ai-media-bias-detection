@@ -57,8 +57,8 @@ train_dataset = NewsDataset(train_encodings, y_train_encoded)
 test_dataset = NewsDataset(test_encodings, y_test_encoded)
 
 
-train_loader = DataLoader(train_dataset, batch_size=16, shuffle=True)
-test_loader = DataLoader(test_dataset, batch_size=16, shuffle=False)
+train_loader = DataLoader(train_dataset, batch_size=8, shuffle=True)
+test_loader = DataLoader(test_dataset, batch_size=8, shuffle=False)
 
 
 optimizer = torch.optim.AdamW(model.parameters(), lr=3e-5, weight_decay=0.0001)  # Reduced learning rate for better fine-tuning
