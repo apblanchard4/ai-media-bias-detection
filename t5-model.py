@@ -1,116 +1,125 @@
-from transformers import T5Tokenizer, T5Model, AutoTokenizer, AutoModelForSequenceClassification, Trainer, TrainingArguments, EarlyStoppingCallback
+import os
 import torch
-import numpy as np
 import pandas as pd
-from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import LabelEncoder
-from sklearn.metrics import precision_score, recall_score, f1_score
+from transformers import (
+    T5Tokenizer, 
+    T5ForSequenceClassification, 
+    Trainer, 
+    TrainingArguments
+)
+from datasets import Dataset
 from sklearn.utils import resample
-from transformers.file_utils import ExplicitEnum
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import precision_recall_fscore_support
 
-device = torch.device("mps") if torch.backends.mps.is_available() else torch.device("cpu")
 
-bias_data = pd.read_csv('BABE.csv')
+df = pd.read_csv('BABE.csv')
 
-# Check for missing values
-assert bias_data['text'].notna().all(), "There are missing values in the text column"
-assert bias_data['label_bias'].notna().all(), "There are missing values in the label_bias column"
+assert df['text'].notna().all(), "There are missing values in the text column"
+assert df['label_bias'].notna().all(), "There are missing values in the label_bias column"
 
-bias_data['label_bias'] = np.where(bias_data['label_bias'] > 0.5, "Biased", "Non-biased")
 # Remove the "No agreement" label
-bias_data = bias_data[bias_data['label_bias'] != "No agreement"]
+df = df[df['label_bias'] != "No agreement"]
+
+# Convert labels to integers: "Non-biased" = 0, "Biased" = 1
+df['label_bias'] = df['label_bias'].map({"Non-biased": 0, "Biased": 1})
 
 # Separate classes for balancing
-df_majority = bias_data[bias_data['label_bias'] == "Non-biased"]
-df_minority = bias_data[bias_data['label_bias'] == "Biased"]
+df_majority = df[df['label_bias'] == 0]
+df_minority = df[df['label_bias'] == 1]
 
-# Oversample minority class
-df_minority_oversampled = resample(df_minority,
-                                   replace=True,    # Sample with replacement
-                                   n_samples=len(df_majority),  # Match number of majority class
+df_minority_oversampled = resample(df_minority, 
+                                   replace=True,   
+                                   n_samples=len(df_majority), 
                                    random_state=42)
 
-# Combine majority class with oversampled minority class
 df_balanced = pd.concat([df_majority, df_minority_oversampled])
 
+train_df, eval_df = train_test_split(df_balanced, test_size=0.2, random_state=42)
 
-MODEL = "t5-small"
-tokenizer = AutoTokenizer.from_pretrained(MODEL)
-model = T5Model.from_pretrained(MODEL)
+# Convert to Hugging Face Dataset
+train_dataset = Dataset.from_pandas(train_df)
+eval_dataset = Dataset.from_pandas(eval_df)
+
+# Tokenization
+tokenizer = T5Tokenizer.from_pretrained("t5-small")
+max_length = 512 
+
+def preprocess_function(examples):
+    return tokenizer(
+        examples["text"], 
+        padding="max_length", 
+        truncation=True, 
+        max_length=max_length
+    )
+
+train_dataset = train_dataset.map(preprocess_function, batched=True)
+eval_dataset = eval_dataset.map(preprocess_function, batched=True)
+
+
+train_dataset = train_dataset.rename_column("label_bias", "labels")
+eval_dataset = eval_dataset.rename_column("label_bias", "labels")
+
+
+train_dataset.set_format(type="torch", columns=["input_ids", "attention_mask", "labels"])
+eval_dataset.set_format(type="torch", columns=["input_ids", "attention_mask", "labels"])
+
+model = T5ForSequenceClassification.from_pretrained("t5-small", num_labels=2)
+
+# Device setup: Use MPS if available, otherwise fallback to CPU
+device = "mps" if torch.backends.mps.is_available() else "cpu"
 model.to(device)
 
-
-label_encoder = LabelEncoder()
-df_balanced['label'] = label_encoder.fit_transform(df_balanced['label_bias'])
-
-train_texts, val_texts, train_labels, val_labels = train_test_split(bias_data['text'], bias_data['label_bias'], train_size = 0.2, random_state=42)
-
-train_encodings = tokenizer(list(train_texts), truncation=True, padding='max_length', max_length=128)
-val_encodings = tokenizer(list(val_texts), truncation=True, padding='max_length', max_length=128)
-
-# Convert to torch dataset
-class BiasDataset(torch.utils.data.Dataset):
-    def __init__(self, encodings, label):
-        self.encodings = encodings
-        self.label = label
-
-    def __getitem__(self, idx):
-        item = {key: torch.tensor(val[idx]) for key, val in self.encodings.items()}
-        item['label'] = torch.tensor(self.label[idx])
-        return item
-
-    def __len__(self):
-        return len(self.label)
-
-train_dataset = BiasDataset(train_encodings, list(train_labels))
-val_dataset = BiasDataset(val_encodings, list(val_labels))
-
+# Training Arguments
 training_args = TrainingArguments(
-    output_dir='./results',
-    evaluation_strategy="epoch",
-    per_device_train_batch_size=8,
-    per_device_eval_batch_size=8,
-    num_train_epochs=5,
-    learning_rate=2e-5,
-    weight_decay=0.01,
-    logging_dir='./logs',
-    logging_steps=10,
+    output_dir="./results",
+    eval_strategy="steps", 
+    evaluation_strategy="epoch", 
     save_strategy="epoch",
+    logging_dir="./logs",
+    per_device_train_batch_size=2,
+    per_device_eval_batch_size=2,
+    learning_rate=5e-5,
+    num_train_epochs=3,
+    weight_decay=0.01,
     load_best_model_at_end=True,
+    metric_for_best_model="eval_loss",
+    save_total_limit=1,  
+    logging_steps=10, 
+    fp16=False  
 )
 
-# Define custom metrics for evaluation
+# Define Metrics
+from sklearn.metrics import precision_recall_fscore_support
+
+
 def compute_metrics(pred):
     labels = pred.label_ids
-    preds = pred.predictions.argmax(-1)
-    precision = precision_score(labels, preds, average='binary')
-    recall = recall_score(labels, preds, average='binary')
-    f1 = f1_score(labels, preds, average='binary')
-    return {
-        'precision': precision,
-        'recall': recall,
-        'f1': f1,
-    }
+    
+    # If pred.predictions is a tuple (e.g., (logits, attention_weights)), we take the first element (logits)
+    logits = pred.predictions[0] if isinstance(pred.predictions, tuple) else pred.predictions
+    
+    # Apply argmax to get the predicted labels
+    preds = logits.argmax(-1)
 
+    # Calculate precision, recall, and F1 score
+    precision, recall, f1, _ = precision_recall_fscore_support(labels, preds, average="binary")
+
+    return {"precision": precision, "recall": recall, "f1": f1}
+
+# Trainer setup
 trainer = Trainer(
     model=model,
     args=training_args,
     train_dataset=train_dataset,
-    eval_dataset=val_dataset,
+    eval_dataset=eval_dataset,
     tokenizer=tokenizer,
     compute_metrics=compute_metrics,
-    callbacks=[EarlyStoppingCallback(early_stopping_patience=2)],
 )
 
-# Train the model
+# Start Training
 trainer.train()
 
-# Save the best model and tokenizer
-model.save_pretrained('./saved_model')
-tokenizer.save_pretrained('./saved_model')
-
-print("Model and tokenizer saved to './saved_model'")
-
+# Evaluate the model
 results = trainer.evaluate()
-accuracy = results['eval_accuracy'] * 100
-print(f"Model Accuracy: {accuracy:.2f}%")
+print("Evaluation Results:", results)
