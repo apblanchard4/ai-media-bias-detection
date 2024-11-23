@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Bias Detection</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            padding: 20px;
+            max-width: 600px;
+            margin: auto;
+        }
+        input[type="text"] {
+            width: 80%;
+            padding: 10px;
+            margin: 10px 0;
+        }
+        button {
+            padding: 10px 20px;
+            font-size: 16px;
+        }
+        .result {
+            margin-top: 20px;
+            padding: 10px;
+            border: 1px solid #ccc;
+            border-radius: 5px;
+        }
+    </style>
+</head>
+<body>
+    <h1>Bias Detection</h1>
+    <form method="post">
+        <input type="text" name="sentence" placeholder="Enter a sentence" required>
+        <button type="submit">Predict</button>
+    </form>
+
+    {% if prediction is not none %}
+        <div class="result">
+            <h3>Result:</h3>
+            <p><strong>{{ prediction }}</strong></p>
+            <p>Input: "{{ sentence }}"</p>
+        </div>
+    {% endif %}
+</body>
+</html>
